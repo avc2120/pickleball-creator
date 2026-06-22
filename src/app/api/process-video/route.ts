@@ -152,7 +152,8 @@ async function runFfmpegDynamic(
   const cropHeight = 1920;
   const scaledWidth = 1920;
 
-  const segmentCropXs: number[] = [];
+  let index = 0;
+
   for (let start = 0; start < duration; start += segmentSeconds) {
     const nearby = points.filter(
       (p) => p.t >= start && p.t < start + segmentSeconds
@@ -165,23 +166,11 @@ async function runFfmpegDynamic(
           )
         : scaledWidth / 2;
 
-    const cropX = Math.round(
-      Math.max(0, Math.min(scaledWidth - cropWidth, avgCenterX - cropWidth / 2))
-    );
-    segmentCropXs.push(cropX);
-  }
-
-  let index = 0;
-  for (let start = 0; start < duration; start += segmentSeconds) {
-    const cropX = segmentCropXs[index];
-    const prevCropX = index === 0 ? cropX : segmentCropXs[index - 1];
-    const xExpr =
-      index === 0
-        ? String(cropX)
-        : `round(${prevCropX} + (${cropX} - ${prevCropX}) * t / ${segmentSeconds})`;
+    const cropX = avgCenterX - cropWidth / 2;
 
     const segmentPath = path.join(tempDir, `segment-${index}.mp4`);
     segmentPaths.push(segmentPath);
+
 
     await runCommand("ffmpeg", [
       "-ss",
@@ -191,7 +180,7 @@ async function runFfmpegDynamic(
       "-i",
       inputPath,
       "-vf",
-      `scale=-2:${cropHeight},crop=${cropWidth}:${cropHeight}:${xExpr}:0`,
+      `scale=-2:${cropHeight},crop=${cropWidth}:${cropHeight}:${cropX}:0`,
       "-c:v",
       "libx264",
       "-g",
@@ -257,7 +246,39 @@ export async function POST(req: NextRequest) {
     await writeFile(inputPath, Buffer.from(bytes));
     const points = await findMotionPoints(inputPath);
     console.log("Detected motion points:", points.slice(0, 30));
-    await runFfmpegDynamic(inputPath, outputPath, points);
+    const pointsPath = path.join(os.tmpdir(), `${crypto.randomUUID()}-points.json`);
+    const framesDir = path.join(os.tmpdir(), `${crypto.randomUUID()}-frames`);
+
+    await fs.writeFile(pointsPath, JSON.stringify({ points }));
+
+    await runCommand(path.join(process.cwd(), "yolo-env", "bin", "python"), [
+      path.join(process.cwd(), "scripts", "render_smooth_reel.py"),
+      inputPath,
+      pointsPath,
+      framesDir,
+    ]);
+
+    await runCommand("ffmpeg", [
+      "-framerate",
+      "30",
+      "-i",
+      path.join(framesDir, "frame_%06d.jpg"),
+      "-i",
+      inputPath,
+      "-map",
+      "0:v:0",
+      "-map",
+      "1:a?",
+      "-c:v",
+      "libx264",
+      "-pix_fmt",
+      "yuv420p",
+      "-c:a",
+      "aac",
+      "-shortest",
+      "-y",
+      outputPath,
+    ]);
 
     const outputBuffer = await readFile(outputPath);
     return new Response(outputBuffer, {
