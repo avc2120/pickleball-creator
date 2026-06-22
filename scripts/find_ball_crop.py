@@ -115,27 +115,6 @@ while True:
         player_center_x = round((left + right) / 2)
         player_center_y = round((top + bottom) / 2)
 
-    display = frame.copy()
-    # draw all players
-    for p in players:
-        px = p["cx"]
-        py = p["cy"]
-        x1, y1, x2, y2 = p["box"]
-        cv2.rectangle(display, (x1, y1), (x2, y2), (0, 200, 0), 3)
-        cv2.circle(display, (px, py), 10, (0, 255, 0), -1)
-        cv2.putText(display, "PLAYER", (px + 12, py - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 0), 2, cv2.LINE_AA)
-
-    # mark the average center if available
-    if player_center_x is not None:
-        cv2.line(display, (player_center_x, 0), (player_center_x, h), (0, 255, 255), 3)
-        cv2.circle(display, (player_center_x, player_center_y), 15, (255, 0, 255), 3)
-        cv2.putText(display, "CENTER", (player_center_x + 10, player_center_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 255), 3, cv2.LINE_AA)
-
-    cv2.putText(display, f"t={t:.2f} src=players", (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
-    if out_writer is not None:
-        out_writer.write(display)
-
     print(f"DEBUG frame={frame_no} t={t:.2f} players={len(players)} centerX={player_center_x} centerY={player_center_y}", file=sys.stderr)
     # compute scaled coordinates relative to a 1920px height frame (what ffmpeg will scale to)
     scaled_width = int(round(w * (1920.0 / h)))
