@@ -1,128 +1,186 @@
+"""
+Render a smooth vertical reel from a source video and motion target points.
+
+Usage:
+    python scripts/render_smooth_reel.py <input_video> <points.json> <frames_dir>
+
+This script reads detector points, interpolates a target center and span per frame,
+applies a smooth zoom and crop, and writes each rendered frame to <frames_dir>.
+"""
+
 import cv2
 import json
 import os
 import sys
 import numpy as np
 
-input_path = sys.argv[1]
-points_path = sys.argv[2]
-frames_dir = sys.argv[3]
+OUT_WIDTH = 1080
+OUT_HEIGHT = 1920
+SMOOTHING_ALPHA = 0.12
+MAX_ZOOM_RATIO = 3.5
 
-with open(points_path, "r") as f:
-    points = json.load(f)["points"]
 
-cap = cv2.VideoCapture(input_path)
-if not cap.isOpened():
-    raise RuntimeError(f"Failed to open input video: {input_path}")
+def load_motion_points(points_path: str):
+    with open(points_path, "r") as f:
+        points = json.load(f).get("points", [])
+    return points or []
 
-fps = cap.get(cv2.CAP_PROP_FPS) or 30
-w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-out_w, out_h = 1080, 1920
-baseline_scale = max(out_w / w, out_h / h)
+def build_point_series(points, fallback_center_x, fallback_center_y):
+    if not points:
+        return np.array([]), np.array([]), np.array([]), np.array([])
 
-os.makedirs(frames_dir, exist_ok=True)
-
-fallback_center_x = (w * baseline_scale) / 2.0
-fallback_center_y = out_h / 2.0
-fallback_span_w = out_w
-fallback_span_h = out_h
-
-points = points or []
-
-times = np.array([p["t"] for p in points]) if points else np.array([])
-center_xs = np.array(
-    [
-        p.get("centerX", fallback_center_x) if p.get("centerX") is not None else fallback_center_x
+    times = np.array([p.get("t", 0) for p in points])
+    center_xs = np.array([
+        p.get("centerX", fallback_center_x)
+        if p.get("centerX") is not None
+        else fallback_center_x
         for p in points
-    ]
-) if points else np.array([])
-center_ys = np.array(
-    [
-        p.get("centerY", fallback_center_y) if p.get("centerY") is not None else fallback_center_y
+    ])
+    center_ys = np.array([
+        p.get("centerY", fallback_center_y)
+        if p.get("centerY") is not None
+        else fallback_center_y
         for p in points
-    ]
-) if points else np.array([])
-span_widths = np.array(
-    [
-        p.get("playerSpanWidth", fallback_span_w) if p.get("playerSpanWidth") is not None else fallback_span_w
+    ])
+    span_widths = np.array([
+        p.get("playerSpanWidth", OUT_WIDTH)
+        if p.get("playerSpanWidth") is not None
+        else OUT_WIDTH
         for p in points
-    ]
-) if points else np.array([])
-span_heights = np.array(
-    [
-        p.get("playerSpanHeight", fallback_span_h) if p.get("playerSpanHeight") is not None else fallback_span_h
+    ])
+    span_heights = np.array([
+        p.get("playerSpanHeight", OUT_HEIGHT)
+        if p.get("playerSpanHeight") is not None
+        else OUT_HEIGHT
         for p in points
-    ]
-) if points else np.array([])
+    ])
 
-frame_idx = 0
-last_crop_x = None
-last_crop_y = None
-last_scale = None
-alpha = 0.12
+    return times, center_xs, center_ys, span_widths, span_heights
 
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
 
-    t = frame_idx / fps
-    if len(points) >= 1:
-        target_center_x = np.interp(t, times, center_xs)
-        target_center_y = np.interp(t, times, center_ys)
-        target_span_w = np.interp(t, times, span_widths)
-        target_span_h = np.interp(t, times, span_heights)
-    else:
-        target_center_x = fallback_center_x
-        target_center_y = fallback_center_y
-        target_span_w = fallback_span_w
-        target_span_h = fallback_span_h
+def interpolate_target(t, series, fallback):
+    times, values = series
+    if len(times) <= 1:
+        return fallback
+    return float(np.interp(t, times, values))
 
+
+def compute_target_frame_values(
+    t,
+    times,
+    center_xs,
+    center_ys,
+    span_widths,
+    span_heights,
+    fallback_center_x,
+    fallback_center_y,
+):
+    if len(times) <= 1:
+        return fallback_center_x, fallback_center_y, OUT_WIDTH, OUT_HEIGHT
+
+    target_center_x = interpolate_target(t, (times, center_xs), fallback_center_x)
+    target_center_y = interpolate_target(t, (times, center_ys), fallback_center_y)
+    target_span_w = interpolate_target(t, (times, span_widths), OUT_WIDTH)
+    target_span_h = interpolate_target(t, (times, span_heights), OUT_HEIGHT)
+
+    return target_center_x, target_center_y, target_span_w, target_span_h
+
+
+def compute_zoom_scale(target_span_w: float, target_span_h: float, baseline_scale: float):
     if target_span_w <= 0 or target_span_h <= 0:
-        ideal_scale = baseline_scale
-    else:
-        scale_w = (out_w * 0.95) / target_span_w
-        scale_h = (out_h * 0.85) / target_span_h
-        ideal_scale = np.clip(min(scale_w, scale_h), baseline_scale, baseline_scale * 3.5)
+        return baseline_scale
 
-    if last_scale is None:
-        scale = ideal_scale
-    else:
-        scale = alpha * ideal_scale + (1 - alpha) * last_scale
-    last_scale = scale
+    scale_w = (OUT_WIDTH * 0.95) / target_span_w
+    scale_h = (OUT_HEIGHT * 0.85) / target_span_h
+    return float(np.clip(min(scale_w, scale_h), baseline_scale, baseline_scale * MAX_ZOOM_RATIO))
 
-    scaled_w = int(np.ceil(w * scale))
-    scaled_h = int(np.ceil(h * scale))
-    scaled = cv2.resize(frame, (scaled_w, scaled_h))
 
-    source_center_x = target_center_x * scale / baseline_scale
-    source_center_y = target_center_y * scale / baseline_scale
+def smooth_value(target: float, previous: float | None, alpha: float):
+    if previous is None:
+        return target
+    return alpha * target + (1 - alpha) * previous
 
-    target_crop_x = int(source_center_x - out_w / 2)
-    target_crop_y = int(source_center_y - out_h / 2)
 
-    target_crop_x = max(0, min(scaled_w - out_w, target_crop_x))
-    target_crop_y = max(0, min(scaled_h - out_h, target_crop_y))
+def clamp_crop(value: int, max_value: int):
+    return max(0, min(max_value, value))
 
-    if last_crop_x is None:
-        crop_x = target_crop_x
-        crop_y = target_crop_y
-    else:
-        crop_x = int(alpha * target_crop_x + (1 - alpha) * last_crop_x)
-        crop_y = int(alpha * target_crop_y + (1 - alpha) * last_crop_y)
 
-    last_crop_x = crop_x
-    last_crop_y = crop_y
+def render_frames(input_path: str, points_path: str, frames_dir: str):
+    points = load_motion_points(points_path)
 
-    cropped = scaled[crop_y:crop_y + out_h, crop_x:crop_x + out_w]
+    cap = cv2.VideoCapture(input_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Failed to open input video: {input_path}")
 
-    cv2.imwrite(
-        os.path.join(frames_dir, f"frame_{frame_idx:06d}.jpg"),
-        cropped
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    baseline_scale = max(OUT_WIDTH / width, OUT_HEIGHT / height)
+    fallback_center_x = (width * baseline_scale) / 2.0
+    fallback_center_y = OUT_HEIGHT / 2.0
+
+    times, center_xs, center_ys, span_widths, span_heights = build_point_series(
+        points,
+        fallback_center_x,
+        fallback_center_y,
     )
 
-    frame_idx += 1
+    os.makedirs(frames_dir, exist_ok=True)
 
-cap.release()
+    last_crop_x = None
+    last_crop_y = None
+    last_scale = None
+    frame_idx = 0
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        t = frame_idx / fps
+        target_center_x, target_center_y, target_span_w, target_span_h = compute_target_frame_values(
+            t,
+            times,
+            center_xs,
+            center_ys,
+            span_widths,
+            span_heights,
+            fallback_center_x,
+            fallback_center_y,
+        )
+
+        ideal_scale = compute_zoom_scale(target_span_w, target_span_h, baseline_scale)
+        scale = smooth_value(ideal_scale, last_scale, SMOOTHING_ALPHA)
+        last_scale = scale
+
+        scaled_w = int(np.ceil(width * scale))
+        scaled_h = int(np.ceil(height * scale))
+        scaled_frame = cv2.resize(frame, (scaled_w, scaled_h))
+
+        source_center_x = target_center_x * scale / baseline_scale
+        source_center_y = target_center_y * scale / baseline_scale
+
+        proposed_crop_x = int(source_center_x - OUT_WIDTH / 2)
+        proposed_crop_y = int(source_center_y - OUT_HEIGHT / 2)
+
+        crop_x = clamp_crop(proposed_crop_x, scaled_w - OUT_WIDTH)
+        crop_y = clamp_crop(proposed_crop_y, scaled_h - OUT_HEIGHT)
+
+        crop_x = int(smooth_value(crop_x, last_crop_x, SMOOTHING_ALPHA))
+        crop_y = int(smooth_value(crop_y, last_crop_y, SMOOTHING_ALPHA))
+
+        last_crop_x = crop_x
+        last_crop_y = crop_y
+
+        cropped_frame = scaled_frame[crop_y:crop_y + OUT_HEIGHT, crop_x:crop_x + OUT_WIDTH]
+
+        cv2.imwrite(os.path.join(frames_dir, f"frame_{frame_idx:06d}.jpg"), cropped_frame)
+        frame_idx += 1
+
+    cap.release()
+
+
+if __name__ == "__main__":
+    render_frames(sys.argv[1], sys.argv[2], sys.argv[3])

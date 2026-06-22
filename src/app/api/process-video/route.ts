@@ -1,3 +1,7 @@
+/**
+ * API route that processes an uploaded video by detecting player motion,
+ * rendering a smooth vertical crop sequence, and recombining video with audio.
+ */
 import { NextRequest } from "next/server";
 import { writeFile, readFile, unlink, rm } from "fs/promises";
 import { spawn, execFile } from "child_process";
@@ -13,6 +17,7 @@ const detectorScript = path.join(process.cwd(), "scripts", "find_ball_crop.py");
 const renderScript = path.join(process.cwd(), "scripts", "render_smooth_reel.py");
 const ffmpegExecutable = "ffmpeg";
 
+// MotionPoint represents a camera target sample produced by the Python detector.
 type MotionPoint = {
   t: number;
   centerX: number;
@@ -21,6 +26,7 @@ type MotionPoint = {
   playerSpanHeight?: number;
 };
 
+// Spawn a child process and collect stderr for error reporting.
 function spawnCommand(command: string, args: string[]) {
   return new Promise<void>((resolve, reject) => {
     const child = spawn(command, args);
@@ -37,6 +43,7 @@ function spawnCommand(command: string, args: string[]) {
   });
 }
 
+// Convert a runtime value to a number only when safe.
 function safeNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value)
     ? value
@@ -49,6 +56,7 @@ function safeParseNumber(value: unknown): number {
     : parseFloat(String(value)) || 0;
 }
 
+// Parse JSON output from the detector script and normalize fields.
 function parseDetectorOutput(stdout: string): MotionPoint[] {
   const rawOutput = stdout.trim();
   const firstBrace = rawOutput.indexOf("{");
@@ -68,6 +76,7 @@ function parseDetectorOutput(stdout: string): MotionPoint[] {
     .filter((point) => point.centerX !== null) as MotionPoint[];
 }
 
+// Run the Python detector and return normalized motion points.
 async function findMotionPoints(inputPath: string): Promise<MotionPoint[]> {
   try {
     const { stdout, stderr } = await execFileAsync(pythonExecutable, [
@@ -88,10 +97,12 @@ async function findMotionPoints(inputPath: string): Promise<MotionPoint[]> {
   }
 }
 
+// Generate a unique temporary path for intermediate files.
 function createTempPath(suffix: string) {
   return path.join(os.tmpdir(), `${crypto.randomUUID()}-${suffix}`);
 }
 
+// Run the Python rendering script to generate cropped frames.
 async function renderFrames(
   inputPath: string,
   pointsPath: string,
@@ -105,6 +116,7 @@ async function renderFrames(
   ]);
 }
 
+// Combine the generated frames with the original audio track.
 async function encodeVideo(
   framesDir: string,
   inputPath: string,
@@ -133,6 +145,7 @@ async function encodeVideo(
   ]);
 }
 
+// Remove temporary files created during processing.
 async function cleanupPaths(paths: string[]) {
   await Promise.all(
     paths.map(async (target) => {
@@ -157,6 +170,8 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: "File too large. Max 100MB." }, { status: 400 });
   }
 
+  // Prepare temp paths for the uploaded source, final output, detector points, and frame directory.
+
   const inputPath = createTempPath("input.mp4");
   const outputPath = createTempPath("output.mp4");
   const pointsPath = createTempPath("points.json");
@@ -166,9 +181,11 @@ export async function POST(req: NextRequest) {
     const bytes = await file.arrayBuffer();
     await writeFile(inputPath, Buffer.from(bytes));
 
+    // Detect motion and player targets with the helper Python script.
     const points = await findMotionPoints(inputPath);
     console.log("Detected motion points:", points.slice(0, 30));
 
+    // Render the cropped frame sequence and then encode it back to MP4.
     await writeFile(pointsPath, JSON.stringify({ points }));
     await renderFrames(inputPath, pointsPath, framesDir);
     await encodeVideo(framesDir, inputPath, outputPath);
