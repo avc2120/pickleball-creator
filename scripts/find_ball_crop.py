@@ -109,11 +109,23 @@ while True:
     scaled_width = int(round(w * (1920.0 / h)))
     scaled_center_x = int(round(player_center_x * (1920.0 / h))) if player_center_x is not None else None
     scaled_center_y = int(round(player_center_y * (1920.0 / h))) if player_center_y is not None else None
+    scaled_player_span_width = (
+        int(round((right - left) * (1920.0 / h)))
+        if player_center_x is not None
+        else None
+    )
+    scaled_player_span_height = (
+        int(round((bottom - top) * (1920.0 / h)))
+        if player_center_x is not None
+        else None
+    )
 
     points.append({
         "t": round(t, 3),
         "centerX": scaled_center_x,
         "centerY": scaled_center_y,
+        "playerSpanWidth": scaled_player_span_width,
+        "playerSpanHeight": scaled_player_span_height,
         "scaledWidth": scaled_width,
         "players": [{"cx": p["cx"], "cy": p["cy"]} for p in players],
         "source": "yolo-players",

@@ -53,6 +53,8 @@ type MotionPoint = {
   t: number;
   centerX: number;
   centerY?: number;
+  playerSpanWidth?: number;
+  playerSpanHeight?: number;
 };
 
 async function findMotionPoints(inputPath: string): Promise<MotionPoint[]> {
@@ -99,10 +101,16 @@ async function findMotionPoints(inputPath: string): Promise<MotionPoint[]> {
               ? p.ballX
               : null;
           const centerY = typeof p.centerY === "number" ? p.centerY : null;
+          const playerSpanWidth =
+            typeof p.playerSpanWidth === "number" ? p.playerSpanWidth : null;
+          const playerSpanHeight =
+            typeof p.playerSpanHeight === "number" ? p.playerSpanHeight : null;
           return {
             t,
             centerX,
             centerY,
+            playerSpanWidth,
+            playerSpanHeight,
           } as MotionPoint;
         })
         .filter((p: any) => p.centerX !== null && Number.isFinite(p.centerX));
