@@ -85,7 +85,7 @@ while True:
     else:
         scale_w = (out_w * 0.95) / target_span_w
         scale_h = (out_h * 0.85) / target_span_h
-        ideal_scale = np.clip(min(scale_w, scale_h), baseline_scale, baseline_scale * 4.5)
+        ideal_scale = np.clip(min(scale_w, scale_h), baseline_scale, baseline_scale * 3.5)
 
     if last_scale is None:
         scale = ideal_scale

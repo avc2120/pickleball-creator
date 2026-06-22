@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import math
+import numpy as np
 from ultralytics import YOLO
 
 video_path = sys.argv[1]
@@ -27,12 +28,43 @@ if not out_writer.isOpened():
 def get_label_name(model, cls):
     return str(getattr(model, "names", {}).get(cls, cls)).lower()
 
+def detect_motion_center(frame, prev_gray):
+    h, w = frame.shape[:2]
 
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (21, 21), 0)
+
+    if prev_gray is None:
+        return None, 0, gray
+
+    diff = cv2.absdiff(prev_gray, gray)
+    _, thresh = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
+
+    # Ignore noisy regions
+    thresh[: int(h * 0.12), :] = 0
+    thresh[int(h * 0.92) :, :] = 0
+
+    moments = cv2.moments(thresh)
+
+    if moments["m00"] <= 5000:
+        return None, int(moments["m00"]), gray
+
+    motion_center_x = int(moments["m10"] / moments["m00"])
+    motion_strength = int(moments["m00"])
+
+    return motion_center_x, motion_strength, gray
+
+prev_gray = None
 while True:
     ret, frame = cap.read()
     if not ret:
         break
 
+    motion_center_x, motion_strength, prev_gray = detect_motion_center(
+        frame,
+        prev_gray
+    )
+    
     frame_no = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
     if frame_no % sample_every != 0:
         continue
@@ -107,8 +139,27 @@ while True:
     print(f"DEBUG frame={frame_no} t={t:.2f} players={len(players)} centerX={player_center_x} centerY={player_center_y}", file=sys.stderr)
     # compute scaled coordinates relative to a 1920px height frame (what ffmpeg will scale to)
     scaled_width = int(round(w * (1920.0 / h)))
-    scaled_center_x = int(round(player_center_x * (1920.0 / h))) if player_center_x is not None else None
-    scaled_center_y = int(round(player_center_y * (1920.0 / h))) if player_center_y is not None else None
+    scale_factor = 1920.0 / h
+
+    if player_center_x is not None:
+        if motion_center_x is not None:
+            interest_center_x = int(0.8 * player_center_x + 0.2 * motion_center_x)
+        else:
+            interest_center_x = player_center_x
+
+        scaled_center_x = int(round(interest_center_x * scale_factor))
+        scaled_center_y = int(round(player_center_y * scale_factor))
+        scaled_motion_center_x = (
+            int(round(motion_center_x * scale_factor))
+            if motion_center_x is not None
+            else None
+        )
+    else:
+        interest_center_x = None
+        scaled_center_x = None
+        scaled_center_y = None
+        scaled_motion_center_x = None
+
     scaled_player_span_width = (
         int(round((right - left) * (1920.0 / h)))
         if player_center_x is not None
@@ -120,15 +171,33 @@ while True:
         else None
     )
 
+    scaled_player_center_x = int(round(player_center_x * scale_factor))
+    scaled_player_center_y = int(round(player_center_y * scale_factor))
+
+    scaled_interest_center_x = int(round(interest_center_x * scale_factor))
+    scaled_interest_center_y = scaled_player_center_y
+
     points.append({
-        "t": round(t, 3),
-        "centerX": scaled_center_x,
-        "centerY": scaled_center_y,
+        "t": round(t, 3), # final camera target
+        "centerX": scaled_interest_center_x,
+        "centerY": scaled_player_center_y,
+
+        # raw inputs
+        "playerCenterX": scaled_player_center_x,
+        "playerCenterY": scaled_player_center_y,
+
+        "motionCenterX": scaled_motion_center_x,
+        "motionStrength": motion_strength,
+
+        # zoom inputs
         "playerSpanWidth": scaled_player_span_width,
         "playerSpanHeight": scaled_player_span_height,
+
+        # debugging
+        "playerCount": len(players),
         "scaledWidth": scaled_width,
-        "players": [{"cx": p["cx"], "cy": p["cy"]} for p in players],
-        "source": "yolo-players",
+
+        "source": "yolo-players-motion"
     })
 
 cap.release()
@@ -137,3 +206,5 @@ if out_writer is not None:
     print(f"DEBUG closed debug overlay video: {debug_output_path}", file=sys.stderr)
 
 print(json.dumps({"points": points}))
+
+
