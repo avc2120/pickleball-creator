@@ -1,53 +1,17 @@
 import { NextRequest } from "next/server";
-import { writeFile, readFile, unlink } from "fs/promises";
-import { spawn } from "child_process";
-import { execFile } from "child_process";
+import { writeFile, readFile, unlink, rm } from "fs/promises";
+import { spawn, execFile } from "child_process";
 import { promisify } from "util";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
-import * as fs from "fs/promises";
 
 export const runtime = "nodejs";
 const execFileAsync = promisify(execFile);
-
-function runFfmpeg(inputPath: string, outputPath: string, avgCenterX: number | null) {
-  return new Promise<void>((resolve, reject) => {
-    const cropX =
-      avgCenterX === null
-        ? "(iw-1080)/2"
-        : String(Math.max(0, Math.min(1920 - 1080, avgCenterX - 540)));
-
-    const args = [
-      "-i",
-      inputPath,
-      "-vf",
-      `scale=-2:1920,crop=1080:1920:${cropX}:0`,
-      "-c:v",
-      "libx264",
-      "-preset",
-      "fast",
-      "-crf",
-      "23",
-      "-c:a",
-      "aac",
-      "-y",
-      outputPath,
-    ];
-
-    const ffmpeg = spawn("ffmpeg", args);
-
-    let stderr = "";
-    ffmpeg.stderr.on("data", (data) => {
-      stderr += data.toString();
-    });
-
-    ffmpeg.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(stderr));
-    });
-  });
-}
+const pythonExecutable = path.join(process.cwd(), "yolo-env", "bin", "python");
+const detectorScript = path.join(process.cwd(), "scripts", "find_ball_crop.py");
+const renderScript = path.join(process.cwd(), "scripts", "render_smooth_reel.py");
+const ffmpegExecutable = "ffmpeg";
 
 type MotionPoint = {
   t: number;
@@ -57,82 +21,11 @@ type MotionPoint = {
   playerSpanHeight?: number;
 };
 
-async function findMotionPoints(inputPath: string): Promise<MotionPoint[]> {
-  try {
-    const pythonPath = path.join(
-      process.cwd(),
-      "yolo-env",
-      "bin",
-      "python"
-    );
-
-    const scriptPath = path.join(
-      process.cwd(),
-      "scripts",
-      "find_ball_crop.py"
-    );
-
-    const { stdout, stderr } = await execFileAsync(pythonPath, [
-      scriptPath,
-      inputPath,
-    ], {
-      maxBuffer: 20 * 1024 * 1024,
-    });
-
-    if (stderr) {
-      console.error("Python detector stderr:", stderr);
-    }
-
-    const rawOutput = stdout.trim();
-    const firstBrace = rawOutput.indexOf("{");
-    const jsonText = firstBrace !== -1 ? rawOutput.slice(firstBrace) : rawOutput;
-
-    try {
-      const result = JSON.parse(jsonText);
-      const pts = Array.isArray(result.points) ? result.points : [];
-
-      return pts
-        .map((p: any) => {
-          const t = typeof p.t === "number" ? p.t : parseFloat(p.t) || 0;
-          const centerX =
-            typeof p.centerX === "number"
-              ? p.centerX
-              : typeof p.ballX === "number"
-              ? p.ballX
-              : null;
-          const centerY = typeof p.centerY === "number" ? p.centerY : null;
-          const playerSpanWidth =
-            typeof p.playerSpanWidth === "number" ? p.playerSpanWidth : null;
-          const playerSpanHeight =
-            typeof p.playerSpanHeight === "number" ? p.playerSpanHeight : null;
-          return {
-            t,
-            centerX,
-            centerY,
-            playerSpanWidth,
-            playerSpanHeight,
-          } as MotionPoint;
-        })
-        .filter((p: any) => p.centerX !== null && Number.isFinite(p.centerX));
-    } catch (parseError) {
-      console.error("Detection failed to parse JSON", {
-        error: parseError,
-        rawOutput,
-        stderr,
-      });
-      return [];
-    }
-  } catch (error) {
-    console.error("Detection failed", error);
-    return [];
-  }
-}
-
-function runCommand(command: string, args: string[]) {
+function spawnCommand(command: string, args: string[]) {
   return new Promise<void>((resolve, reject) => {
     const child = spawn(command, args);
-
     let stderr = "";
+
     child.stderr.on("data", (data) => {
       stderr += data.toString();
     });
@@ -144,93 +37,112 @@ function runCommand(command: string, args: string[]) {
   });
 }
 
-async function runFfmpegDynamic(
-  inputPath: string,
-  outputPath: string,
-  points: MotionPoint[]
-) {
-  const segmentSeconds = 2.0; // 2s segments = very smooth camera transitions
-  const duration = Math.ceil(Math.max(...points.map((p) => p.t), 1));
-  const tempDir = path.join(os.tmpdir(), crypto.randomUUID());
+function safeNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : null;
+}
 
-  await fs.mkdir(tempDir, { recursive: true });
+function safeParseNumber(value: unknown): number {
+  return typeof value === "number"
+    ? value
+    : parseFloat(String(value)) || 0;
+}
 
-  const segmentPaths: string[] = [];
-  const cropWidth = 1080;
-  const cropHeight = 1920;
-  const scaledWidth = 1920;
+function parseDetectorOutput(stdout: string): MotionPoint[] {
+  const rawOutput = stdout.trim();
+  const firstBrace = rawOutput.indexOf("{");
+  const jsonText = firstBrace !== -1 ? rawOutput.slice(firstBrace) : rawOutput;
+  const result = JSON.parse(jsonText);
+  const points = Array.isArray(result.points) ? result.points : [];
 
-  let index = 0;
+  return points
+    .map((point: any) => ({
+      t: safeParseNumber(point.t),
+      centerX:
+        safeNumber(point.centerX) ?? safeNumber(point.ballX) ?? null,
+      centerY: safeNumber(point.centerY),
+      playerSpanWidth: safeNumber(point.playerSpanWidth),
+      playerSpanHeight: safeNumber(point.playerSpanHeight),
+    }))
+    .filter((point) => point.centerX !== null) as MotionPoint[];
+}
 
-  for (let start = 0; start < duration; start += segmentSeconds) {
-    const nearby = points.filter(
-      (p) => p.t >= start && p.t < start + segmentSeconds
-    );
-
-    const avgCenterX =
-      nearby.length > 0
-        ? Math.round(
-            nearby.reduce((sum, p) => sum + p.centerX, 0) / nearby.length
-          )
-        : scaledWidth / 2;
-
-    const cropX = avgCenterX - cropWidth / 2;
-
-    const segmentPath = path.join(tempDir, `segment-${index}.mp4`);
-    segmentPaths.push(segmentPath);
-
-
-    await runCommand("ffmpeg", [
-      "-ss",
-      String(start),
-      "-t",
-      String(segmentSeconds),
-      "-i",
+async function findMotionPoints(inputPath: string): Promise<MotionPoint[]> {
+  try {
+    const { stdout, stderr } = await execFileAsync(pythonExecutable, [
+      detectorScript,
       inputPath,
-      "-vf",
-      `scale=-2:${cropHeight},crop=${cropWidth}:${cropHeight}:${cropX}:0`,
-      "-c:v",
-      "libx264",
-      "-g",
-      "5",
-      "-preset",
-      "medium",
-      "-crf",
-      "22",
-      "-c:a",
-      "aac",
-      "-b:a",
-      "128k",
-      "-y",
-      segmentPath,
-    ]);
+    ], {
+      maxBuffer: 20 * 1024 * 1024,
+    });
 
-    index++;
+    if (stderr) {
+      console.error("Python detector stderr:", stderr);
+    }
+
+    return parseDetectorOutput(stdout);
+  } catch (error) {
+    console.error("Detection failed", error);
+    return [];
   }
+}
 
-  const concatFile = path.join(tempDir, "concat.txt");
+function createTempPath(suffix: string) {
+  return path.join(os.tmpdir(), `${crypto.randomUUID()}-${suffix}`);
+}
 
-  await fs.writeFile(
-    concatFile,
-    segmentPaths.map((p) => `file '${p}'`).join("\n")
-  );
+async function renderFrames(
+  inputPath: string,
+  pointsPath: string,
+  framesDir: string
+) {
+  await spawnCommand(pythonExecutable, [
+    renderScript,
+    inputPath,
+    pointsPath,
+    framesDir,
+  ]);
+}
 
-  await runCommand("ffmpeg", [
-    "-f",
-    "concat",
-    "-safe",
-    "0",
+async function encodeVideo(
+  framesDir: string,
+  inputPath: string,
+  outputPath: string
+) {
+  await spawnCommand(ffmpegExecutable, [
+    "-framerate",
+    "30",
     "-i",
-    concatFile,
+    path.join(framesDir, "frame_%06d.jpg"),
+    "-i",
+    inputPath,
+    "-map",
+    "0:v:0",
+    "-map",
+    "1:a?",
     "-c:v",
-    "copy",
+    "libx264",
+    "-pix_fmt",
+    "yuv420p",
     "-c:a",
     "aac",
-    "-b:a",
-    "128k",
+    "-shortest",
     "-y",
     outputPath,
   ]);
+}
+
+async function cleanupPaths(paths: string[]) {
+  await Promise.all(
+    paths.map(async (target) => {
+      try {
+        await unlink(target);
+      } catch {
+        // ignore missing files
+      }
+    })
+  );
 }
 
 export async function POST(req: NextRequest) {
@@ -245,48 +157,21 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: "File too large. Max 100MB." }, { status: 400 });
   }
 
-  const id = crypto.randomUUID();
-  const inputPath = path.join(os.tmpdir(), `${id}-input.mp4`);
-  const outputPath = path.join(os.tmpdir(), `${id}-output.mp4`);
+  const inputPath = createTempPath("input.mp4");
+  const outputPath = createTempPath("output.mp4");
+  const pointsPath = createTempPath("points.json");
+  const framesDir = createTempPath("frames");
 
   try {
     const bytes = await file.arrayBuffer();
     await writeFile(inputPath, Buffer.from(bytes));
+
     const points = await findMotionPoints(inputPath);
     console.log("Detected motion points:", points.slice(0, 30));
-    const pointsPath = path.join(os.tmpdir(), `${crypto.randomUUID()}-points.json`);
-    const framesDir = path.join(os.tmpdir(), `${crypto.randomUUID()}-frames`);
 
-    await fs.writeFile(pointsPath, JSON.stringify({ points }));
-
-    await runCommand(path.join(process.cwd(), "yolo-env", "bin", "python"), [
-      path.join(process.cwd(), "scripts", "render_smooth_reel.py"),
-      inputPath,
-      pointsPath,
-      framesDir,
-    ]);
-
-    await runCommand("ffmpeg", [
-      "-framerate",
-      "30",
-      "-i",
-      path.join(framesDir, "frame_%06d.jpg"),
-      "-i",
-      inputPath,
-      "-map",
-      "0:v:0",
-      "-map",
-      "1:a?",
-      "-c:v",
-      "libx264",
-      "-pix_fmt",
-      "yuv420p",
-      "-c:a",
-      "aac",
-      "-shortest",
-      "-y",
-      outputPath,
-    ]);
+    await writeFile(pointsPath, JSON.stringify({ points }));
+    await renderFrames(inputPath, pointsPath, framesDir);
+    await encodeVideo(framesDir, inputPath, outputPath);
 
     const outputBuffer = await readFile(outputPath);
     return new Response(outputBuffer, {
@@ -299,8 +184,13 @@ export async function POST(req: NextRequest) {
     console.error(error);
     return Response.json({ error: "Video processing failed" }, { status: 500 });
   } finally {
-    await unlink(inputPath).catch(() => {});
-    await unlink(outputPath).catch(() => {});
+    await cleanupPaths([inputPath, outputPath, pointsPath]);
+
+    try {
+      await rm(framesDir, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup failures
+    }
   }
 }
 
