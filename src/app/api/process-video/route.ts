@@ -152,8 +152,7 @@ async function runFfmpegDynamic(
   const cropHeight = 1920;
   const scaledWidth = 1920;
 
-  let index = 0;
-
+  const segmentCropXs: number[] = [];
   for (let start = 0; start < duration; start += segmentSeconds) {
     const nearby = points.filter(
       (p) => p.t >= start && p.t < start + segmentSeconds
@@ -166,10 +165,23 @@ async function runFfmpegDynamic(
           )
         : scaledWidth / 2;
 
+    const cropX = Math.round(
+      Math.max(0, Math.min(scaledWidth - cropWidth, avgCenterX - cropWidth / 2))
+    );
+    segmentCropXs.push(cropX);
+  }
+
+  let index = 0;
+  for (let start = 0; start < duration; start += segmentSeconds) {
+    const cropX = segmentCropXs[index];
+    const prevCropX = index === 0 ? cropX : segmentCropXs[index - 1];
+    const xExpr =
+      index === 0
+        ? String(cropX)
+        : `round(${prevCropX} + (${cropX} - ${prevCropX}) * t / ${segmentSeconds})`;
 
     const segmentPath = path.join(tempDir, `segment-${index}.mp4`);
     segmentPaths.push(segmentPath);
-
 
     await runCommand("ffmpeg", [
       "-ss",
@@ -179,7 +191,7 @@ async function runFfmpegDynamic(
       "-i",
       inputPath,
       "-vf",
-      `scale=-2:${cropHeight},crop=${cropWidth}:${cropHeight}:${avgCenterX}:0`,
+      `scale=-2:${cropHeight},crop=${cropWidth}:${cropHeight}:${xExpr}:0`,
       "-c:v",
       "libx264",
       "-g",
