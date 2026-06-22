@@ -1,36 +1,226 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Pickleball Creator
 
-## Getting Started
+Automatically convert horizontal pickleball videos into Instagram-ready vertical highlights using AI-powered player tracking, smart camera panning, and dynamic reframing.
 
-First, run the development server:
+## Features
+
+### Automatic Vertical Reframing
+
+Converts 16:9 pickleball videos into 9:16 vertical videos suitable for:
+
+* Instagram Reels
+* TikTok
+* YouTube Shorts
+
+### AI Player Detection
+
+Uses YOLOv8 to detect players on the court and estimate the center of the rally.
+
+### Smart Camera Movement
+
+Instead of a fixed crop, the virtual camera:
+
+* Tracks player positions
+* Computes rally center
+* Smoothly pans across the court
+* Avoids abrupt camera jumps
+
+### Motion-Aware Framing
+
+Motion detection is combined with player detection to better capture action during:
+
+* Fast exchanges
+* Wide dinks
+* ATP attempts
+* Ernes
+* Player movement across the court
+
+### Debug Visualization
+
+Generate an optional debug video showing:
+
+* Detected players
+* Rally center
+* Motion center
+* Camera target
+
+---
+
+## How It Works
+
+### Detection Pipeline
+
+```text
+Input Video
+    ↓
+YOLOv8 Player Detection
+    ↓
+Motion Detection
+    ↓
+Interest Center Calculation
+    ↓
+Camera Path Generation
+    ↓
+Vertical Reel Rendering
+    ↓
+Output Video
+```
+
+### Interest Center
+
+The camera does not follow the ball directly.
+
+Instead, it computes an "interest center" based on:
+
+```text
+80% Player Center
+20% Motion Center
+```
+
+This produces smoother and more watchable camera movement.
+
+---
+
+## Tech Stack
+
+### Frontend
+
+* Next.js
+* React
+* TypeScript
+
+### Backend
+
+* Next.js API Routes
+* Node.js
+
+### Computer Vision
+
+* Python
+* OpenCV
+* Ultralytics YOLOv8
+
+### Video Processing
+
+* FFmpeg
+
+---
+
+## Local Development
+
+### Prerequisites
+
+Install:
+
+* Node.js 20+
+* Python 3.11+
+* FFmpeg
+
+Verify FFmpeg:
+
+```bash
+ffmpeg -version
+```
+
+---
+
+### Install Dependencies
+
+#### Frontend
+
+```bash
+npm install
+```
+
+#### Python Environment
+
+```bash
+python3 -m venv yolo-env
+source yolo-env/bin/activate
+
+pip install ultralytics opencv-python numpy
+```
+
+---
+
+### Run Locally
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```text
+http://localhost:3000
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Upload a pickleball video and generate a vertical version automatically.
 
-## Learn More
+---
 
-To learn more about Next.js, take a look at the following resources:
+## Project Structure
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```text
+pickleball-creator/
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+├── src/
+│   ├── app/
+│   │   └── api/
+│   │       └── process-video/
+│   │           └── route.ts
+│
+├── scripts/
+│   ├── find_ball_crop.py
+│   ├── render_smooth_reel.py
+│
+├── yolo-env/
+│
+├── public/
+│
+└── README.md
+```
 
-## Deploy on Vercel
+---
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Current Roadmap
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### Completed
+
+* Upload video
+* Player detection
+* Rally center estimation
+* Motion-aware camera targeting
+* Smooth virtual camera panning
+* Vertical reel export
+
+### In Progress
+
+* Dynamic zoom
+* Better rally detection
+* Highlight ranking
+* Multi-player tracking with ByteTrack
+
+### Future
+
+* Automatic highlight generation
+* Point detection
+* Celebration detection
+* AI-generated captions
+* Social media publishing workflow
+
+---
+
+## Example Use Cases
+
+* Turn full pickleball games into vertical content
+* Create Instagram Reels automatically
+* Generate highlight clips for tournaments
+* Produce social-ready content without manual editing
+
+---
+
+## License
+
+MIT
+
