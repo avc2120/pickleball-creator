@@ -7,6 +7,7 @@ from ultralytics import YOLO
 
 SAMPLE_EVERY = 5  # sample every 5 frames for smoother tracking and lower overhead
 TARGET_HEIGHT = 1920.0
+ENABLE_ZOOM_LOGIC = False
 
 
 def get_label_name(model, cls):
@@ -129,8 +130,8 @@ def make_point_entry(
         "t": round(t, 3),
         "centerX": scale_value(interest_x, frame_height),
         "centerY": scale_value(player_stats["center_y"], frame_height),
-        "playerCenterX": scale_value(player_stats["center_x"], frame_height),
-        "playerCenterY": scale_value(player_stats["center_y"], frame_height),
+        "playerCenterX": scale_value(player_stats["center_x"], frame_height) if ENABLE_ZOOM_LOGIC else None,
+        "playerCenterY": scale_value(player_stats["center_y"], frame_height) if ENABLE_ZOOM_LOGIC else None,
         "motionCenterX": scale_value(motion_center_x, frame_height)
         if motion_center_x is not None
         else None,
